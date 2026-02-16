@@ -1,0 +1,29 @@
+# maiplug_message_react - 配置示例文件
+# 复制此文件为 config.toml 并填写您的配置
+
+# 插件基本信息
+[plugin]
+
+# 插件名称
+name = "maiplug_message_react"
+
+# 插件版本
+version = "1.1.0"
+
+# 是否启用插件
+enabled = true
+
+
+[napcat]
+
+# Napcat服务地址
+# Docker 部署用户可使用 "napcat"
+# 本地部署用户通常使用 "127.0.0.1"
+host = "napcat"
+
+# Napcat服务端口
+port = 9999
+
+# Napcat服务认证Token
+# 请填写您的 Napcat Token
+token = ""

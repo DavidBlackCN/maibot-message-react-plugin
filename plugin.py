@@ -25,8 +25,8 @@ available_react_emojis = {76: "点赞", 307: "喵喵", 285: "摸鱼",
                           350: "贴贴", 175: "卖萌", 344: "大怨种",
                           187: "鬼魂", 144: "礼花", 146: "爆筋",
                           311: "打call", 59: "便便", 46: "猪头",
-                          37: "骷髅头", 317: "菜狗", 124: "OK"}
-
+                          37: "骷髅头", 13: "呲牙", 124: "OK",
+                          233: "笑哭", 20: "偷笑", 293: "敲脑瓜"}
 
 class MessageReactAction(BaseAction):
 
@@ -36,6 +36,10 @@ class MessageReactAction(BaseAction):
     action_description = "向指定群聊消息添加反应表情，表情会显示在对应消息的下面"
     parallel_action = True
     activation_type = ActionActivationType.ALWAYS
+
+    action_parameters = {
+        "target_message_id": "要贴表情的消息ID（可选，不填则默认对触发消息贴表情）"
+    }
 
     action_require = [
         "需要或想要对消息添加反应表情时",
@@ -58,76 +62,122 @@ class MessageReactAction(BaseAction):
     """
 
     async def execute(self) -> Tuple[bool, str]:
-        """执行问候动作 - 这是核心功能"""
-        # 发送问候消息
+        """执行消息反应动作"""
         if not self.is_group:
             return False, "消息反应仅支持群聊"
-        chat_id = self.action_message.chat_id
+
+        target_message_id = self.action_data.get("target_message_id")
+        target_message = None
+
+        if target_message_id:
+            recent_messages = message_api.get_recent_messages(chat_id=self.chat_id, limit=20)
+            for msg in recent_messages:
+                if msg.message_id == target_message_id:
+                    target_message = msg
+                    break
+            if not target_message:
+                logger.warning(f"未在最近消息中找到目标消息ID: {target_message_id}，回退到触发消息")
+                target_message = self.action_message
+        else:
+            target_message = self.action_message
+
+        if not target_message:
+            return False, "没有可用的目标消息"
+
+        target_msg_id = target_message.message_id
+        target_user_name = target_message.user_info.user_nickname
+        target_content = target_message.processed_plain_text or ""
+        if target_content:
+            target_content = target_content.replace("\n", " ").replace("\r", " ")[:100]
+
         available_emojis_prompt = ", ".join(
             [f"{emoji_id}:{emoji_name}" for emoji_id, emoji_name in available_react_emojis.items()])
-        recent_messages = message_api.get_recent_messages(chat_id=self.chat_id, limit=15)
+
+        recent_messages = message_api.get_recent_messages(chat_id=self.chat_id, limit=10)
         messages_text = ""
         if recent_messages:
-            # 使用message_api构建可读的消息字符串
-            # <ID>, <时间(相对)>, <用户>: <内容>
             list_message = []
             for msg in recent_messages:
                 maam = MessageAndActionModel.from_DatabaseMessages(msg)
                 user_name = maam.user_nickname
-                content = maam.processed_plain_text.replace("\n", " ").replace("\r", " ")
+                content = maam.processed_plain_text.replace("\n", " ").replace("\r", " ")[:50] if maam.processed_plain_text else ""
                 msg_id = msg.message_id
                 timestamp = translate_timestamp_to_human_readable(maam.time, mode="relative")
-                list_message.append(f"{msg_id},{timestamp},{user_name}:{content}")
+                marker = " [目标消息]" if msg_id == target_msg_id else ""
+                list_message.append(f"{msg_id},{timestamp},{user_name}:{content}{marker}")
             messages_text = "\n".join(list_message)
 
-        logger.info(f"最近消息: {messages_text}")
-        # 4. 构建prompt让LLM选择情感
-        prompt = f"""
-你是一个正在进行聊天的网友，你需要根据一个和最近的聊天记录，从一个反应表情列表中选择最匹配的一个反应表情的数字ID。
-这是最近的聊天记录列表，消息的格式为："<id>,<time>,<user>:<content>" 一行一个：
-{messages_text}
-以下是是可用的反应表情，ID 在前，名称在后，不同反应表情间用","分割：
-{available_emojis_prompt}
-请严格按下列的 JSON 格式返回最匹配的那个反应表情 ID 和消息 ID，不要进行任何解释或添加其他多余的文字：
-{{
-  "message_id": "要贴反应表情的消息ID",
-  "emoji_id": "选择的对应反应表情ID"
-}}
-"""
-        logger.info(f"生成的LLM Prompt: {prompt}")
+        prompt = f"""你是一个正在进行聊天的网友，需要为目标消息选择一个最合适的反应表情。
 
-        # 5. 调用LLM
+**目标消息**（标记为[目标消息]的那条）：
+- 消息ID: {target_msg_id}
+- 发送者: {target_user_name}
+- 内容: {target_content}
+
+**最近聊天记录**（格式：<id>,<time>,<user>:<content>）：
+{messages_text}
+
+**可用的反应表情**（ID:名称）：
+{available_emojis_prompt}
+
+请根据目标消息的内容和上下文，选择一个最合适的反应表情。
+严格按JSON格式返回，不要添加任何解释：
+{{
+  "emoji_id": "选择的表情ID（数字）",
+  "reason": "简短理由（10字以内）"
+}}"""
+
+        logger.debug(f"生成的LLM Prompt: {prompt}")
+
         models = llm_api.get_available_models()
-        chat_model_config = models.get("tool_use")  # 使用字典访问方式
+        chat_model_config = models.get("tool_use")
         if not chat_model_config:
-            logger.error(f"未找到'tool_use'模型配置，无法调用LLM")
+            logger.error("未找到'tool_use'模型配置，无法调用LLM")
             return False, "未找到'tool_use'模型配置"
 
         success, chosen_react_emoji_json_str, _, _ = await llm_api.generate_with_model(
             prompt, model_config=chat_model_config, request_type="text"
         )
         logger.debug(f"LLM返回: {chosen_react_emoji_json_str}")
-        fixedResp = fix_broken_generated_json(chosen_react_emoji_json_str)
-        logger.debug(f"LLM修复: {fixedResp}")
-        json_resp = json.loads(fixedResp)
+
         if not success:
             logger.error(f"LLM调用失败: {chosen_react_emoji_json_str}")
             return False, f"LLM调用失败: {chosen_react_emoji_json_str}"
-        selected_message_id = json_resp["message_id"]
-        chosen_react_emoji_id = json_resp["emoji_id"].strip().replace('"', "").replace("'", "")
-        chosen_react_emoji_name = available_react_emojis.get(int(chosen_react_emoji_id))
-        logger.debug(f"LLM响应解析: {selected_message_id}, {chosen_react_emoji_id}: {chosen_react_emoji_name}")
-        await self.send_msg_react(chat_id, selected_message_id, chosen_react_emoji_id,
-                                  self.get_config("napcat.host", "napcat"),
-                                  self.get_config("napcat.port", 9999),
-                                  self.get_config("napcat.token", None))
-        await store_action_info(self.chat_stream, True,
-                                f"[反应表情：贴在了消息ID={selected_message_id}上，表情是={chosen_react_emoji_name}]",
-                                True,
-                                self.thinking_id,
-                                self.action_data,
-                                self.action_name)
-        return success == True, f"反应表情：贴在了消息ID={selected_message_id}上，表情是={chosen_react_emoji_name}"
+
+        try:
+            fixedResp = fix_broken_generated_json(chosen_react_emoji_json_str)
+            json_resp = json.loads(fixedResp)
+            emoji_id_raw = json_resp.get("emoji_id")
+            if not emoji_id_raw:
+                return False, "LLM未返回emoji_id"
+            chosen_react_emoji_id = str(emoji_id_raw).strip().replace('"', "").replace("'", "")
+            chosen_react_emoji_name = available_react_emojis.get(int(chosen_react_emoji_id), "未知表情")
+        except Exception as e:
+            logger.error(f"解析LLM响应失败: {e}")
+            return False, f"解析LLM响应失败: {e}"
+
+        logger.info(f"准备贴表情: 消息ID={target_msg_id}, 表情={chosen_react_emoji_id}:{chosen_react_emoji_name}")
+
+        await self.send_msg_react(
+            self.chat_id,
+            target_msg_id,
+            chosen_react_emoji_id,
+            self.get_config("napcat.host", "napcat"),
+            self.get_config("napcat.port", 9999),
+            self.get_config("napcat.token", None)
+        )
+
+        await store_action_info(
+            self.chat_stream,
+            True,
+            f"[反应表情：贴在 {target_user_name} 的消息上，表情={chosen_react_emoji_name}]",
+            True,
+            self.thinking_id,
+            self.action_data,
+            self.action_name
+        )
+
+        return True, f"反应表情：贴在 {target_user_name} 的消息上，表情={chosen_react_emoji_name}"
 
     async def send_msg_react(self, chat_id, message_id, chosen_react_emoji, napcat_host, napcat_port, napcat_token) -> Tuple[bool, str]:
         import http.client
@@ -162,28 +212,22 @@ class MessageReactAction(BaseAction):
             return False, f"贴表情失败 {error_info}"
 
 
-# ===== 插件注册 =====
-
-
 @register_plugin
 class MessageReactPlugin(BasePlugin):
-    """Hello World插件 - 你的第一个MaiCore插件"""
+    """消息反应插件 - 为群聊消息添加表情反应"""
 
-    # 插件基本信息
-    plugin_name: str = "maiplug_message_react"  # 内部标识符
+    plugin_name: str = "maiplug_message_react"
     enable_plugin: bool = True
-    dependencies: List[str] = []  # 插件依赖列表
-    python_dependencies: List[str] = []  # Python包依赖列表
-    config_file_name: str = "config.toml"  # 配置文件名
+    dependencies: List[str] = []
+    python_dependencies: List[str] = []
+    config_file_name: str = "config.toml"
 
-    # 配置节描述
     config_section_descriptions = {"plugin": "插件基本信息"}
 
-    # 配置Schema定义
     config_schema: dict = {
         "plugin": {
             "name": ConfigField(type=str, default="maiplug_message_react", description="插件名称"),
-            "version": ConfigField(type=str, default="1.0.0", description="插件版本"),
+            "version": ConfigField(type=str, default="1.1.0", description="插件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
         },
         "napcat": {
@@ -194,4 +238,4 @@ class MessageReactPlugin(BasePlugin):
     }
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        return [ (MessageReactAction.get_action_info(), MessageReactAction)]
+        return [(MessageReactAction.get_action_info(), MessageReactAction)]

@@ -1,8 +1,21 @@
-# maiplug_message_react
+# maiplug_message_react - 重制版
+
+> [!NOTE]
+> **原作者**: [Ghost_chu](https://github.com/Ghost-chu)  
+> **原仓库**: [Ghost-chu/maiplug_message_react](https://github.com/Ghost-chu/maiplug_message_react)
+>
+> 本仓库为原插件的重制版，修复了若干问题并进行了优化改进。
+
 麦麦插件，让麦麦学会怎么给消息贴表情吧  
 通过调用 Napcat API，让麦麦使用 LLM 决定为哪条消息贴哪个表情
 
 <img width="832" height="427" alt="PixPin_2025-09-01_22-10-20" src="https://github.com/user-attachments/assets/e0a68cd3-718b-464b-b9e8-e7c1926421c3" />
+
+## 更新日志
+
+### v1.1.0 (重制版)
+- 修复了若干已知问题
+- 优化了代码结构
 
 ## 配置
 
@@ -12,3 +25,11 @@
 4. 编辑刚刚生成的 `config.toml` 配置文件，配置 *Napcat服务地址*、*Napcat 服务端口* 和 *Napcat服务认证Token*   
   4.1 对于跟随麦麦官方 Docker 教程部署的用户，Napcat 服务地址可直接使用 `napcat`
 5. 重新启动麦麦，在群里艾特一下让麦麦给你贴个表情，能贴了就说明装好了
+
+## 致谢
+
+感谢 [Ghost_chu](https://github.com/Ghost-chu) 开发的原版插件，本重制版基于其工作进行了改进。
+
+## 许可证
+
+本项目采用 MIT 许可证，继承自原项目。

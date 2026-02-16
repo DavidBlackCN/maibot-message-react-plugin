@@ -1,18 +1,26 @@
 {
   "manifest_version": 1,
-  "name": "maiplug_message_react - 麦麦贴表情",
-  "version": "1.0.1",
-  "description": "通过 Napcat API 赋予麦麦对消息贴表情的能力",
+  "name": "maiplug_message_react - 麦麦贴表情 (重制版)",
+  "version": "1.1.0",
+  "description": "通过 Napcat API 赋予麦麦对消息贴表情的能力 - 重制版，修复了若干问题",
   "author": {
-    "name": "Ghost_chu (修复：putaojuju)",
+    "name": "Ghost_chu",
     "url": "https://github.com/Ghost-chu"
   },
+  "contributors": [
+    {
+      "name": "Ghost_chu",
+      "url": "https://github.com/Ghost-chu",
+      "role": "original_author"
+    }
+  ],
   "license": "MIT",
   "host_application": {
     "min_version": "0.10.1"
   },
-  "homepage_url": "https://github.com/putaojuju/maiplug_message_react",
-  "repository_url": "https://github.com/putaojuju/maiplug_message_react",
+  "homepage_url": "https://github.com/Ghost-chu/maiplug_message_react",
+  "repository_url": "https://github.com/Ghost-chu/maiplug_message_react",
+  "original_repository": "https://github.com/Ghost-chu/maiplug_message_react",
   "keywords": [
     "reaction",
     "group",
@@ -38,10 +46,5 @@
       "消息反应表情功能"
     ]
   },
-  "id": "Ghost_chu.maiplug_message_react"
-  "fixer_info": { 
-    "fixer_name": "putaojuju",
-    "fixer_url": "https://github.com/putaojuju",
-    "fix_content": "修复'int' object has no attribute 'strip'运行时报错，保障插件稳定运行"
-  }
+  "id": "Ghost_chu.maiplug_message_react.remake"
 }
