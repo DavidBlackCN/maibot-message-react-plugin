@@ -3,8 +3,9 @@
 > [!NOTE]
 > **原作者**: [Ghost_chu](https://github.com/Ghost-chu)
 > **原仓库**: [Ghost-chu/maiplug_message_react](https://github.com/Ghost-chu/maiplug_message_react)
+> **一开仓库**: [putaojuju/maiplug_message_react-remake](https://github.com/putaojuju/maiplug_message_react-remake)
 >
-> 本仓库为原插件的重制版，已迁移至 MaiBot 1.0.0 + maibot-plugin-sdk 2.x。
+> 本仓库为原插件的二开版，已迁移至 MaiBot 1.0.0 + maibot-plugin-sdk 2.x，使用DeepSeek V4 Pro，自用。
 
 麦麦插件，让麦麦学会怎么给消息贴表情吧
 通过调用 Napcat API，让麦麦使用 LLM 决定为哪条消息贴哪个表情
@@ -56,7 +57,7 @@ token = ""
 
 ## 致谢
 
-感谢 [Ghost_chu](https://github.com/Ghost-chu) 开发的原版插件，本重制版基于其工作进行了改进。
+感谢 [Ghost_chu](https://github.com/Ghost-chu) 开发的原版插件，感谢 [putaojuju](https://github.com/putaojuju) 的修改版插件，本插件基于此更新。
 
 ## 许可证
 
