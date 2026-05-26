@@ -8,18 +8,6 @@
     "name": "DavidBlackCN",
     "url": "https://github.com/DavidBlackCN"
   },
-  "contributors": [
-    {
-      "name": "Ghost_chu",
-      "url": "https://github.com/Ghost-chu",
-      "role": "original_author"
-    },
-    {
-      "name": "putaojuju",
-      "url": "https://github.com/putaojuju",
-      "role": "original_author"
-    }
-  ],
   "license": "MIT",
   "urls": {
     "repository": "https://github.com/DavidBlackCN/maibot-message-react-plugin",
