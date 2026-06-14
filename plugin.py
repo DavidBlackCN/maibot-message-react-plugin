@@ -13,6 +13,10 @@ import http.client
 from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import ToolParameterInfo, ToolParamType
 
+# MaiBot 内部模块 — 用于直接指定模型名绕过 task 路由
+from src.config.model_configs import TaskConfig
+from src.llm_models.utils_model import LLMOrchestrator
+
 # ============================================================
 # 可用反应表情字典（ID → 名称）
 # ============================================================
@@ -40,7 +44,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="2.0.0", description="配置版本")
+    config_version: str = Field(default="2.0.1", description="配置版本")
 
 
 class NapcatConfig(PluginConfigBase):
@@ -52,6 +56,7 @@ class NapcatConfig(PluginConfigBase):
     host: str = Field(default="napcat", description="Napcat 服务地址")
     port: int = Field(default=9999, description="Napcat 服务端口")
     token: str = Field(default="", description="Napcat 服务认证 Token")
+    llm_task: str = Field(default="", description="选表情用的模型，支持 MaiBot task 名或直接模型标识（如 planner / doubao-seed-1-6-25061）")
 
 
 class MessageReactConfig(PluginConfigBase):
@@ -78,6 +83,10 @@ def _translate_timestamp_to_relative(ts: float) -> str:
     """将 Unix 时间戳转换为相对时间描述。"""
     if not ts:
         return "未知"
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return "未知"
     now = time.time()
     diff = now - ts
     if diff < 60:
@@ -103,6 +112,54 @@ class MessageReactPlugin(MaiBotPlugin):
     async def on_load(self) -> None:
         """插件加载时执行。"""
         self.ctx.logger.info("消息贴表情插件已加载")
+        await self._check_napcat_connection()
+
+    async def _check_napcat_connection(self) -> None:
+        """检测 Napcat HTTP 服务连通性并记录日志。"""
+        host = self.config.napcat.host
+        port = self.config.napcat.port
+        token = self.config.napcat.token
+
+        self.ctx.logger.info(
+            "正在检测 Napcat HTTP 服务连通性: host=%s, port=%d", host, port
+        )
+
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=5)
+            headers: dict[str, str] = {}
+            if token:
+                headers["Authorization"] = token
+            conn.request("GET", "/get_version_info", headers=headers)
+            res = conn.getresponse()
+            data = res.read().decode("utf-8")
+            conn.close()
+
+            if res.status == 200:
+                self.ctx.logger.info(
+                    "✅ Napcat HTTP 服务连接成功 (host=%s, port=%d), 响应: %s",
+                    host, port, data[:200],
+                )
+            else:
+                self.ctx.logger.warning(
+                    "⚠️ Napcat HTTP 服务返回异常状态码 %d (host=%s, port=%d), 响应: %s",
+                    res.status, host, port, data[:200],
+                )
+        except ConnectionRefusedError:
+            self.ctx.logger.error(
+                "❌ Napcat HTTP 服务连接被拒绝 (host=%s, port=%d)，"
+                "请检查 Napcat 是否启动并在 WebUI 中配置了 HTTP 服务器",
+                host, port,
+            )
+        except OSError as e:
+            self.ctx.logger.error(
+                "❌ Napcat HTTP 服务无法连接 (host=%s, port=%d): %s",
+                host, port, e,
+            )
+        except Exception as e:
+            self.ctx.logger.error(
+                "❌ Napcat HTTP 服务检测异常 (host=%s, port=%d): %s: %s",
+                host, port, type(e).__name__, e,
+            )
 
     async def on_unload(self) -> None:
         """插件卸载时执行。"""
@@ -147,33 +204,42 @@ class MessageReactPlugin(MaiBotPlugin):
         self, target_message_id: str = "", **kwargs: Any
     ) -> dict[str, Any]:
         """执行消息贴表情。LLM 根据对话上下文决定是否调用此工具。"""
-        # --- 从 kwargs 中提取 SDK 注入的上下文 ---
-        message: dict[str, Any] = kwargs.get("message", {})
+        # SDK 2.x 的 @Tool 处理函数中，上下文数据直接在 kwargs 里
         stream_id: str = kwargs.get("stream_id", "")
+        chat_id: str = kwargs.get("chat_id", "") or stream_id
+        group_id: str = kwargs.get("group_id", "")
+        user_id: str = kwargs.get("user_id", "")
+        platform: str = kwargs.get("platform", "")
 
-        msg_base_info = message.get("message_base_info", {})
-        chat_type = msg_base_info.get("chat_type", "")
+        self.ctx.logger.info(
+            "msg_react 调用: stream_id=%s, chat_id=%s, group_id=%s, "
+            "user_id=%s, platform=%s, target_message_id=%s",
+            stream_id, chat_id, group_id, user_id, platform,
+            target_message_id or "(默认触发消息)",
+        )
 
-        if chat_type != "group":
+        # 群聊判断：存在 group_id 即为群聊
+        if not group_id:
             return {"success": False, "content": "消息反应仅支持群聊"}
 
         # --- 确定目标消息 ---
         if target_message_id:
             target_msg_id = target_message_id
-            # 尝试从最近消息中获取目标消息的发送者
-            target_user_name, target_content = await self._get_target_message_info(
-                target_msg_id, msg_base_info.get("chat_id", "") or stream_id
-            )
         else:
-            target_msg_id = msg_base_info.get("message_id", "")
-            target_user_name = str(msg_base_info.get("user_nickname", "未知用户") or "未知用户")
-            target_content = (message.get("plain_text", "") or "")[:100]
+            # 从最近消息中获取触发消息的 ID
+            target_msg_id = await self._get_latest_message_id(chat_id)
+            if not target_msg_id:
+                return {"success": False, "content": "无法获取目标消息 ID"}
+
+        # 获取目标消息详情
+        target_user_name, target_content = await self._get_target_message_info(
+            target_msg_id, chat_id
+        )
 
         if not target_msg_id:
             return {"success": False, "content": "没有可用的目标消息"}
 
         target_content = target_content.replace("\n", " ").replace("\r", " ")[:100]
-        chat_id = msg_base_info.get("chat_id", "") or stream_id
 
         # --- 构建 prompt 让 LLM 选择表情 ---
         prompt = await self._build_emoji_selection_prompt(
@@ -207,24 +273,49 @@ class MessageReactPlugin(MaiBotPlugin):
     # --------------------------------------------------------
     # 内部辅助方法
     # --------------------------------------------------------
+    async def _get_recent_messages(self, chat_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        """获取最近消息，使用 ctx.message.get_recent。"""
+        try:
+            result = await self.ctx.message.get_recent(
+                chat_id=chat_id, limit=limit
+            )
+            if result is not None:
+                return result if isinstance(result, list) else []
+        except Exception as e:
+            self.ctx.logger.warning("ctx.message.get_recent 调用失败: %s", e)
+        return []
+
+    async def _get_latest_message_id(self, chat_id: str) -> str:
+        """获取聊天流中最新的消息 ID。"""
+        recent = await self._get_recent_messages(chat_id, limit=1)
+        if recent:
+            return str(recent[0].get("message_id", ""))
+        return ""
+
     async def _get_target_message_info(
         self, target_msg_id: str, chat_id: str
     ) -> tuple[str, str]:
         """从最近消息中查找目标消息的发送者和内容。"""
-        try:
-            recent = await self.ctx.message.get_recent_messages(
-                chat_id=chat_id, limit=20
+        recent = await self._get_recent_messages(chat_id, limit=20)
+
+        # 诊断：打印第一条消息的所有字段，方便定位 Napcat message_id
+        if recent:
+            first = recent[0]
+            raw = first.get("raw_message", {})
+            self.ctx.logger.info(
+                "最近消息结构诊断: message_id=%s, raw_message type=%s keys=%s",
+                first.get("message_id", ""),
+                type(raw).__name__,
+                list(raw.keys()) if isinstance(raw, dict) else str(raw)[:200],
             )
-        except Exception as e:
-            self.ctx.logger.warning("获取最近消息失败: %s", e)
-            return "未知用户", ""
 
         if recent:
             for msg in recent:
-                mb = msg.get("message_base_info", {})
-                if mb.get("message_id") == target_msg_id:
-                    name = str(mb.get("user_nickname", "未知用户") or "未知用户")
-                    content = (msg.get("plain_text", "") or "")[:100]
+                if str(msg.get("message_id", "")) == target_msg_id:
+                    mi = msg.get("message_info", {})
+                    ui = mi.get("user_info", {}) if mi else {}
+                    name = str(ui.get("user_nickname", "未知用户") or "未知用户")
+                    content = (msg.get("processed_plain_text", "") or "")[:100]
                     return name, content
 
         return "未知用户", ""
@@ -244,22 +335,17 @@ class MessageReactPlugin(MaiBotPlugin):
 
         # 构建最近聊天记录
         messages_text = "（无法获取最近消息）"
-        try:
-            recent = await self.ctx.message.get_recent_messages(
-                chat_id=chat_id, limit=10
-            )
-        except Exception as e:
-            self.ctx.logger.warning("获取最近消息失败: %s", e)
-            recent = None
+        recent = await self._get_recent_messages(chat_id, limit=10)
 
         if recent:
             parts: list[str] = []
             for msg in recent:
-                mb = msg.get("message_base_info", {})
-                user_name = str(mb.get("user_nickname", "未知用户") or "未知用户")
-                content = (msg.get("plain_text", "") or "").replace("\n", " ").replace("\r", " ")[:50]
-                msg_id = mb.get("message_id", "")
-                ts = _translate_timestamp_to_relative(mb.get("time", 0))
+                mi = msg.get("message_info", {})
+                ui = mi.get("user_info", {})
+                user_name = str(ui.get("user_nickname", "未知用户") or "未知用户")
+                content = (msg.get("processed_plain_text", "") or "").replace("\n", " ").replace("\r", " ")[:50]
+                msg_id = str(msg.get("message_id", ""))
+                ts = _translate_timestamp_to_relative(msg.get("timestamp", 0))
                 marker = " [目标消息]" if msg_id == target_msg_id else ""
                 parts.append(f"{msg_id},{ts},{user_name}:{content}{marker}")
             if parts:
@@ -288,7 +374,7 @@ class MessageReactPlugin(MaiBotPlugin):
     async def _llm_select_emoji(self, prompt: str) -> tuple[str, str]:
         """调用 LLM 选择表情，返回 (emoji_id, emoji_name)。失败时返回 ("", 错误消息)。"""
         try:
-            llm_result = await self.ctx.llm.generate(prompt, request_type="text")
+            llm_result = await self._call_llm(prompt)
         except Exception as e:
             self.ctx.logger.error("LLM 调用异常: %s", e)
             return "", f"LLM 调用异常: {e}"
@@ -321,6 +407,76 @@ class MessageReactPlugin(MaiBotPlugin):
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             self.ctx.logger.error("解析 LLM 响应失败: %s, 原始响应: %s", e, content[:200])
             return "", f"解析 LLM 响应失败: {e}"
+
+    async def _call_llm(self, prompt: str) -> dict[str, Any]:
+        """调用 LLM，支持 MaiBot task 名或直接模型标识名。"""
+        configured = str(self.config.napcat.llm_task or "").strip()
+
+        if not configured:
+            # 未配置 → 走系统默认链路
+            return await self.ctx.llm.generate(prompt)
+
+        # 判断是否为已知 task 名，避免无意义的 IPC 报错
+        known_tasks = self._get_known_task_names()
+        if configured in known_tasks:
+            return await self.ctx.llm.generate(prompt, model=configured)
+
+        # 不是 task 名 → 直接走 LLMOrchestrator 直连模型
+        self.ctx.logger.info(
+            "'%s' 作为模型标识直连（已知 task: %s）",
+            configured, known_tasks or "无",
+        )
+        return await self._generate_with_pinned_model(prompt, configured)
+
+    @staticmethod
+    def _get_known_task_names() -> list[str]:
+        """从宿主 model_config.toml 读取已知 task 名列表（带缓存）。"""
+        # 简单实现：硬编码常见 task 名 + 尝试读取宿主配置
+        common = ["planner", "replyer", "tool_use", "utils", "summary", "vision"]
+        try:
+            import tomllib
+            import os
+            path = os.path.join(
+                os.path.dirname(__file__), "..", "..", "config", "model_config.toml"
+            )
+            if os.path.isfile(path):
+                with open(path, "rb") as f:
+                    data = tomllib.load(f)
+                tasks = data.get("model_task_config", {})
+                if isinstance(tasks, dict):
+                    return [t for t in tasks.keys() if isinstance(t, str) and t.strip()]
+        except Exception:
+            pass
+        return common
+
+    async def _generate_with_pinned_model(
+        self, prompt: str, model_name: str
+    ) -> dict[str, Any]:
+        """使用 LLMOrchestrator 绕过 task 路由，直接指定模型。"""
+        orchestrator = LLMOrchestrator(
+            task_name="planner",
+            request_type="plugin.msg_react.select_emoji",
+        )
+        # 替换 orchestrator 的 task config，固定为指定模型
+        orchestrator.model_for_task = TaskConfig(
+            model_list=[model_name],
+            max_tokens=200,
+            temperature=0.7,
+            slow_threshold=30.0,
+            selection_strategy="random",
+        )
+        orchestrator.model_usage = {model_name: (0, 0, 0)}
+
+        result = await orchestrator.generate_response_async(
+            prompt=prompt,
+            temperature=0.7,
+            max_tokens=200,
+        )
+        return {
+            "success": True,
+            "content": result.response,
+            "model": result.model_name,
+        }
 
     async def _call_napcat_set_emoji(
         self, message_id: str, emoji_id: str

@@ -8,7 +8,7 @@
 enabled = true
 
 # 配置版本（请勿手动修改）
-config_version = "2.0.0"
+config_version = "2.0.1"
 
 
 # Napcat 服务连接配置
@@ -25,3 +25,10 @@ port = 9999
 # Napcat 服务认证 Token
 # 请填写您的 Napcat Token（在 Napcat WebUI → 网络配置中查看）
 token = ""
+
+# 选表情用的模型
+# 支持两种写法：
+#   1. MaiBot task 名：planner、tool_use 等
+#   2. 直接模型标识：doubao-seed-1-6-25061 等
+# 留空则使用系统默认模型
+llm_task = ""

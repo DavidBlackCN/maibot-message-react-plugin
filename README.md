@@ -21,6 +21,16 @@
 
 ## 更新日志
 
+### v2.0.1
+- **修复**：修正消息结构解析，适配 MaiBot SDK 2.x 实际字段名（`message_info`、`group_info`、`session_id` 等）
+- **修复**：群聊判断改用 `group_id` 直接检测，不再依赖 `chat_type`
+- **修复**：消息查询 API 改用 `ctx.message.get_recent`
+- **修复**：时间戳类型转换兼容字符串格式
+- **修复**：`capabilities` 改为精确方法级授权（`llm.generate`、`message.get_recent`）
+- **新增**：`llm_task` 配置支持直接填模型标识名，通过 `LLMOrchestrator` 直连绕过 task 路由
+- **新增**：启动时自动检测 Napcat HTTP 服务连通性
+- **新增**：`plugin_type: "tool"` 清单字段
+
 ### v2.0.0
 - **重大更新**：迁移至 MaiBot 1.0.0 + maibot-plugin-sdk 2.x
 - 插件 ID 变更为 `com.putaojuju.msg-react`
