@@ -26,8 +26,9 @@
   "plugin_type": "tool",
   "display": {
     "icon": {
-      "type": "lucide",
-      "value": "smile-plus"
+      "type": "emoji",
+      "value": "💖",
+      "background": "#7a617f"
     }
   },
   "capabilities": ["http_request", "llm.generate", "message.get_recent"],
