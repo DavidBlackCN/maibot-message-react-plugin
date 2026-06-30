@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "com.putaojuju.msg-react-plugin",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "name": "maibot-message-react-plugin - 麦麦贴表情",
   "description": "通过 Napcat API 赋予麦麦对消息贴表情的能力，LLM 自动选择合适的表情对群聊消息做出反应",
   "author": {
@@ -11,7 +11,8 @@
   "license": "MIT",
   "urls": {
     "repository": "https://github.com/DavidBlackCN/maibot-message-react-plugin",
-    "homepage": "https://github.com/DavidBlackCN/maibot-message-react-plugin"
+    "homepage": "https://github.com/DavidBlackCN/maibot-message-react-plugin",
+    "issues": "https://github.com/DavidBlackCN/maibot-message-react-plugin/issues"
   },
   "host_application": {
     "min_version": "1.0.0",
@@ -23,7 +24,13 @@
   },
   "dependencies": [],
   "plugin_type": "tool",
-  "capabilities": ["send_message", "http_request", "llm.generate", "message.get_recent"],
+  "display": {
+    "icon": {
+      "type": "lucide",
+      "value": "smile-plus"
+    }
+  },
+  "capabilities": ["http_request", "llm.generate", "message.get_recent"],
   "i18n": {
     "default_locale": "zh-CN"
   }

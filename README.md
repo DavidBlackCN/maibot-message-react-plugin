@@ -21,6 +21,14 @@
 
 ## 更新日志
 
+### v2.1.0
+- **新增**：普通群聊消息旁路主动贴表情，使用 `EventHandler.ON_MESSAGE` 且不拦截正常回复流程
+- **新增**：`[proactive]` 配置区，可控制主动贴表情开关、概率、关键词加权概率、冷却时间和自消息跳过
+- **修复**：`llm_task` 同时支持 MaiBot task 名（如 `replyer`、`planner`、`utils`、`tool_use`）和具体模型标识名
+- **修复**：适配 SDK 2.x `ctx.llm.generate()` 的 `response` 返回字段，兼容旧 `content` 字段
+- **修复**：限制 LLM 只能返回可用的反应表情 ID，避免向 Napcat 发送未知表情
+- **调整**：Manifest 按当前严格校验补充 `display` 和问题反馈链接，并移除未使用的 `send_message` 能力声明
+
 ### v2.0.1
 - **修复**：修正消息结构解析，适配 MaiBot SDK 2.x 实际字段名（`message_info`、`group_info`、`session_id` 等）
 - **修复**：群聊判断改用 `group_id` 直接检测，不再依赖 `chat_type`
@@ -57,13 +65,26 @@
 ```toml
 [plugin]
 enabled = true
-config_version = "2.0.0"
+config_version = "2.1.0"
 
 [napcat]
 host = "napcat"
 port = 9999
 token = ""
+llm_task = "planner"
+
+[proactive]
+enabled = true
+chance = 0.35
+keyword_chance = 0.75
+cooldown_seconds = 180
+min_text_length = 2
+skip_self_messages = true
 ```
+
+`llm_task` 默认使用 `planner`。也可留空使用系统默认模型，填写其他 MaiBot 模型任务名（如 `replyer`、`utils`、`tool_use`），或直接填写具体模型标识名。
+
+`[proactive]` 控制普通聊天中是否主动贴表情。该逻辑不发送文字回复，不会阻塞麦麦正常聊天，只是在群聊消息进入流程时低频尝试通过 Napcat 添加反应表情。
 
 ## 致谢
 

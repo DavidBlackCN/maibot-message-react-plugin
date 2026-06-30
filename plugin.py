@@ -5,13 +5,14 @@
 """
 
 import json
+import random
 import time
 from typing import Any
 
 import http.client
 
-from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase, Tool
-from maibot_sdk.types import ToolParameterInfo, ToolParamType
+from maibot_sdk import EventHandler, Field, MaiBotPlugin, PluginConfigBase, Tool
+from maibot_sdk.types import EventType, ToolParameterInfo, ToolParamType
 
 # MaiBot 内部模块 — 用于直接指定模型名绕过 task 路由
 from src.config.model_configs import TaskConfig
@@ -44,7 +45,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="2.0.1", description="配置版本")
+    config_version: str = Field(default="2.1.0", description="配置版本")
 
 
 class NapcatConfig(PluginConfigBase):
@@ -56,13 +57,28 @@ class NapcatConfig(PluginConfigBase):
     host: str = Field(default="napcat", description="Napcat 服务地址")
     port: int = Field(default=9999, description="Napcat 服务端口")
     token: str = Field(default="", description="Napcat 服务认证 Token")
-    llm_task: str = Field(default="", description="选表情用的模型，支持 MaiBot task 名或直接模型标识（如 planner / doubao-seed-1-6-25061）")
+    llm_task: str = Field(default="planner", description="选表情用的模型，支持 MaiBot task 名或直接模型标识（如 planner / doubao-seed-1-6-25061）")
+
+
+class ProactiveReactConfig(PluginConfigBase):
+    """普通聊天中的主动贴表情配置。"""
+    __ui_label__ = "主动贴表情"
+    __ui_icon__ = "smile-plus"
+    __ui_order__ = 2
+
+    enabled: bool = Field(default=True, description="是否在普通聊天中主动尝试贴表情")
+    chance: float = Field(default=0.35, description="普通消息主动贴表情概率，范围 0.0-1.0")
+    keyword_chance: float = Field(default=0.75, description="明显适合回应的消息主动贴表情概率，范围 0.0-1.0")
+    cooldown_seconds: int = Field(default=180, description="同一聊天流主动贴表情冷却时间（秒）")
+    min_text_length: int = Field(default=2, description="触发主动贴表情的最短文本长度")
+    skip_self_messages: bool = Field(default=True, description="是否跳过机器人自己发送的消息")
 
 
 class MessageReactConfig(PluginConfigBase):
     """插件顶层配置。"""
     plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
     napcat: NapcatConfig = Field(default_factory=NapcatConfig)
+    proactive: ProactiveReactConfig = Field(default_factory=ProactiveReactConfig)
 
 
 # ============================================================
@@ -111,6 +127,8 @@ class MessageReactPlugin(MaiBotPlugin):
     # --------------------------------------------------------
     async def on_load(self) -> None:
         """插件加载时执行。"""
+        self._proactive_last_react_at: dict[str, float] = {}
+        self._reacted_message_ids: set[str] = set()
         self.ctx.logger.info("消息贴表情插件已加载")
         await self._check_napcat_connection()
 
@@ -173,6 +191,73 @@ class MessageReactPlugin(MaiBotPlugin):
             self.ctx.logger.info("插件配置已更新: version=%s", version)
 
     # --------------------------------------------------------
+    # EventHandler: 普通聊天旁路贴表情
+    # --------------------------------------------------------
+    @EventHandler(
+        "msg_react_auto_observer",
+        description="在普通群聊消息中低频主动添加反应表情，不拦截正常回复流程",
+        event_type=EventType.ON_MESSAGE,
+        intercept_message=False,
+        weight=-10,
+    )
+    async def observe_message_for_react(
+        self, message: dict[str, Any] | None = None, **kwargs: Any
+    ) -> None:
+        """观察普通聊天消息，按概率旁路贴表情。"""
+        if not self.config.plugin.enabled or not self.config.proactive.enabled:
+            return
+
+        msg = message if isinstance(message, dict) else kwargs.get("message", {})
+        if not isinstance(msg, dict):
+            msg = {}
+
+        chat_id = self._first_text(
+            kwargs.get("chat_id"),
+            kwargs.get("stream_id"),
+            msg.get("chat_id"),
+            msg.get("stream_id"),
+            msg.get("session_id"),
+        )
+        group_id = self._first_text(
+            kwargs.get("group_id"),
+            msg.get("group_id"),
+            self._deep_get(msg, "message_info", "group_info", "group_id"),
+            self._deep_get(msg, "group_info", "group_id"),
+        )
+        message_id = self._first_text(
+            kwargs.get("message_id"),
+            msg.get("message_id"),
+            self._deep_get(msg, "raw_message", "message_id"),
+        )
+        content = self._extract_message_text(msg)
+
+        if not chat_id or not group_id or not message_id:
+            return
+        if len(content.strip()) < max(0, self.config.proactive.min_text_length):
+            return
+        if self._is_self_message(msg, kwargs):
+            return
+        if not self._should_try_proactive_react(chat_id, message_id, content):
+            return
+
+        result = await self._react_to_message(
+            chat_id=chat_id,
+            group_id=group_id,
+            target_msg_id=message_id,
+            source="proactive",
+        )
+        if result.get("success"):
+            self._proactive_last_react_at[chat_id] = time.time()
+            self._reacted_message_ids.add(message_id)
+            self.ctx.logger.info("主动贴表情成功: message_id=%s", message_id)
+        else:
+            self.ctx.logger.debug(
+                "主动贴表情跳过或失败: message_id=%s, reason=%s",
+                message_id,
+                result.get("content", ""),
+            )
+
+    # --------------------------------------------------------
     # Tool: 贴表情 (替代旧版 MessageReactAction)
     # --------------------------------------------------------
     @Tool(
@@ -204,6 +289,9 @@ class MessageReactPlugin(MaiBotPlugin):
         self, target_message_id: str = "", **kwargs: Any
     ) -> dict[str, Any]:
         """执行消息贴表情。LLM 根据对话上下文决定是否调用此工具。"""
+        if not self.config.plugin.enabled:
+            return {"success": False, "content": "插件未启用"}
+
         # SDK 2.x 的 @Tool 处理函数中，上下文数据直接在 kwargs 里
         stream_id: str = kwargs.get("stream_id", "")
         chat_id: str = kwargs.get("chat_id", "") or stream_id
@@ -231,13 +319,33 @@ class MessageReactPlugin(MaiBotPlugin):
             if not target_msg_id:
                 return {"success": False, "content": "无法获取目标消息 ID"}
 
+        return await self._react_to_message(
+            chat_id=chat_id,
+            group_id=group_id,
+            target_msg_id=target_msg_id,
+            source="tool",
+        )
+
+    # --------------------------------------------------------
+    # 内部辅助方法
+    # --------------------------------------------------------
+    async def _react_to_message(
+        self,
+        chat_id: str,
+        group_id: str,
+        target_msg_id: str,
+        source: str,
+    ) -> dict[str, Any]:
+        """对指定消息贴表情。"""
+        if not group_id:
+            return {"success": False, "content": "消息反应仅支持群聊"}
+        if not target_msg_id:
+            return {"success": False, "content": "没有可用的目标消息"}
+
         # 获取目标消息详情
         target_user_name, target_content = await self._get_target_message_info(
             target_msg_id, chat_id
         )
-
-        if not target_msg_id:
-            return {"success": False, "content": "没有可用的目标消息"}
 
         target_content = target_content.replace("\n", " ").replace("\r", " ")[:100]
 
@@ -254,8 +362,8 @@ class MessageReactPlugin(MaiBotPlugin):
             return {"success": False, "content": f"LLM 选表情失败: {chosen_react_emoji_name}"}
 
         self.ctx.logger.info(
-            "准备贴表情: 消息ID=%s, 表情=%s:%s",
-            target_msg_id, chosen_react_emoji_id, chosen_react_emoji_name,
+            "准备贴表情: source=%s, 消息ID=%s, 表情=%s:%s",
+            source, target_msg_id, chosen_react_emoji_id, chosen_react_emoji_name,
         )
 
         # --- 通过 Napcat API 发送表情反应 ---
@@ -270,9 +378,6 @@ class MessageReactPlugin(MaiBotPlugin):
             }
         return {"success": False, "content": f"贴表情失败: {detail}"}
 
-    # --------------------------------------------------------
-    # 内部辅助方法
-    # --------------------------------------------------------
     async def _get_recent_messages(self, chat_id: str, limit: int = 20) -> list[dict[str, Any]]:
         """获取最近消息，使用 ctx.message.get_recent。"""
         try:
@@ -382,13 +487,15 @@ class MessageReactPlugin(MaiBotPlugin):
         if not llm_result:
             return "", "LLM 返回为空"
 
-        # 尝试适配不同的返回格式
-        if isinstance(llm_result, dict):
-            if not llm_result.get("success", True):
-                return "", llm_result.get("content", "LLM 返回失败")
-            content = llm_result.get("content", "")
-        else:
-            content = str(llm_result)
+        if isinstance(llm_result, dict) and not llm_result.get("success", True):
+            return "", str(
+                llm_result.get("response")
+                or llm_result.get("content")
+                or llm_result.get("error")
+                or "LLM 返回失败"
+            )
+
+        content = self._extract_llm_text(llm_result)
 
         if not content:
             return "", "LLM 返回内容为空"
@@ -402,7 +509,10 @@ class MessageReactPlugin(MaiBotPlugin):
                 return "", "LLM 未返回 emoji_id"
 
             emoji_id = str(emoji_id_raw).strip().replace('"', "").replace("'", "")
-            emoji_name = AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "未知表情")
+            emoji_id_int = int(emoji_id)
+            if emoji_id_int not in AVAILABLE_REACT_EMOJIS:
+                return "", f"LLM 返回了不可用的 emoji_id: {emoji_id}"
+            emoji_name = AVAILABLE_REACT_EMOJIS[emoji_id_int]
             return emoji_id, emoji_name
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             self.ctx.logger.error("解析 LLM 响应失败: %s, 原始响应: %s", e, content[:200])
@@ -432,7 +542,7 @@ class MessageReactPlugin(MaiBotPlugin):
     def _get_known_task_names() -> list[str]:
         """从宿主 model_config.toml 读取已知 task 名列表（带缓存）。"""
         # 简单实现：硬编码常见 task 名 + 尝试读取宿主配置
-        common = ["planner", "replyer", "tool_use", "utils", "summary", "vision"]
+        common = ["planner", "replyer", "tool_use", "utils", "summary", "vision", "emotion"]
         try:
             import tomllib
             import os
@@ -442,12 +552,113 @@ class MessageReactPlugin(MaiBotPlugin):
             if os.path.isfile(path):
                 with open(path, "rb") as f:
                     data = tomllib.load(f)
-                tasks = data.get("model_task_config", {})
+                tasks = data.get("model_task_config", {}) or data.get("model_task", {})
                 if isinstance(tasks, dict):
-                    return [t for t in tasks.keys() if isinstance(t, str) and t.strip()]
+                    found = [t for t in tasks.keys() if isinstance(t, str) and t.strip()]
+                    return sorted(set(common + found))
         except Exception:
             pass
         return common
+
+    @staticmethod
+    def _extract_llm_text(llm_result: Any) -> str:
+        """兼容 SDK 2.x response 字段和旧 content 字段。"""
+        if isinstance(llm_result, dict):
+            if not llm_result.get("success", True):
+                return ""
+            return str(
+                llm_result.get("response")
+                or llm_result.get("content")
+                or llm_result.get("text")
+                or ""
+            )
+        return str(llm_result or "")
+
+    def _should_try_proactive_react(
+        self, chat_id: str, message_id: str, content: str
+    ) -> bool:
+        """根据冷却、去重和概率判断是否主动贴表情。"""
+        if message_id in getattr(self, "_reacted_message_ids", set()):
+            return False
+
+        now = time.time()
+        last_at = getattr(self, "_proactive_last_react_at", {}).get(chat_id, 0)
+        cooldown = max(0, int(self.config.proactive.cooldown_seconds))
+        if now - last_at < cooldown:
+            return False
+
+        chance = self.config.proactive.keyword_chance if self._looks_reactable(content) else self.config.proactive.chance
+        chance = min(1.0, max(0.0, float(chance)))
+        return random.random() < chance
+
+    @staticmethod
+    def _looks_reactable(content: str) -> bool:
+        """粗略判断一条消息是否明显适合用表情回应。"""
+        text = content.strip().lower()
+        keywords = [
+            "哈哈", "笑死", "好耶", "草", "可爱", "贴贴", "抱抱", "哭", "难过",
+            "谢谢", "恭喜", "牛", "厉害", "救命", "离谱", "绷不住", "？", "!",
+            "！", "www", "233", "orz",
+        ]
+        return any(keyword in text for keyword in keywords)
+
+    @staticmethod
+    def _first_text(*values: Any) -> str:
+        """返回第一个非空字符串。"""
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _deep_get(data: dict[str, Any], *keys: str) -> Any:
+        """安全读取嵌套字典字段。"""
+        current: Any = data
+        for key in keys:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
+
+    def _extract_message_text(self, message: dict[str, Any]) -> str:
+        """从不同版本消息结构中提取文本。"""
+        return self._first_text(
+            message.get("processed_plain_text"),
+            message.get("plain_text"),
+            message.get("text"),
+            message.get("content"),
+            message.get("raw_message"),
+        )
+
+    def _is_self_message(self, message: dict[str, Any], kwargs: dict[str, Any]) -> bool:
+        """尽量识别机器人自己的消息，避免自我贴表情。"""
+        if not self.config.proactive.skip_self_messages:
+            return False
+        flags = [
+            message.get("is_self"),
+            message.get("from_self"),
+            self._deep_get(message, "message_info", "is_self"),
+            self._deep_get(message, "raw_message", "self"),
+        ]
+        if any(flag is True for flag in flags):
+            return True
+
+        user_id = self._first_text(
+            kwargs.get("user_id"),
+            message.get("user_id"),
+            self._deep_get(message, "message_info", "user_info", "user_id"),
+        )
+        bot_id = self._first_text(
+            kwargs.get("bot_id"),
+            kwargs.get("self_id"),
+            message.get("bot_id"),
+            message.get("self_id"),
+            self._deep_get(message, "raw_message", "self_id"),
+        )
+        return bool(user_id and bot_id and user_id == bot_id)
 
     async def _generate_with_pinned_model(
         self, prompt: str, model_name: str
