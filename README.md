@@ -21,6 +21,12 @@
 
 ## 更新日志
 
+### v2.1.1
+- **修复**：移除 Manifest 中 SDK 不支持的 `http_request` 能力声明
+- **修复**：移除对 MaiBot 宿主内部 `TaskConfig` / `LLMOrchestrator` 的直接导入和内部属性操作
+- **修复**：不再读取宿主 `model_config.toml`，避免绕过插件 SDK 文件访问边界
+- **调整**：`llm_task` 统一通过 SDK 公共接口 `ctx.llm.generate(..., model=...)` 传递
+
 ### v2.1.0
 - **新增**：普通群聊消息旁路主动贴表情，使用 `EventHandler.ON_MESSAGE` 且不拦截正常回复流程
 - **新增**：`[proactive]` 配置区，可控制主动贴表情开关、概率、关键词加权概率、冷却时间和自消息跳过
@@ -35,7 +41,7 @@
 - **修复**：消息查询 API 改用 `ctx.message.get_recent`
 - **修复**：时间戳类型转换兼容字符串格式
 - **修复**：`capabilities` 改为精确方法级授权（`llm.generate`、`message.get_recent`）
-- **新增**：`llm_task` 配置支持直接填模型标识名，通过 `LLMOrchestrator` 直连绕过 task 路由
+- **新增**：`llm_task` 配置支持直接填模型标识名
 - **新增**：启动时自动检测 Napcat HTTP 服务连通性
 - **新增**：`plugin_type: "tool"` 清单字段
 
@@ -65,7 +71,7 @@
 ```toml
 [plugin]
 enabled = true
-config_version = "2.1.0"
+config_version = "2.1.1"
 
 [napcat]
 host = "napcat"
@@ -82,7 +88,7 @@ min_text_length = 2
 skip_self_messages = true
 ```
 
-`llm_task` 默认使用 `planner`。也可留空使用系统默认模型，填写其他 MaiBot 模型任务名（如 `replyer`、`utils`、`tool_use`），或直接填写具体模型标识名。
+`llm_task` 默认使用 `planner`。也可留空使用系统默认模型，填写其他 MaiBot 模型任务名（如 `replyer`、`utils`、`tool_use`），或填写当前 SDK/宿主支持通过 `model` 参数指定的模型标识。
 
 `[proactive]` 控制普通聊天中是否主动贴表情。该逻辑不发送文字回复，不会阻塞麦麦正常聊天，只是在群聊消息进入流程时低频尝试通过 Napcat 添加反应表情。
 

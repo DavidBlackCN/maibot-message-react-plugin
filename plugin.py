@@ -14,10 +14,6 @@ import http.client
 from maibot_sdk import EventHandler, Field, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import EventType, ToolParameterInfo, ToolParamType
 
-# MaiBot 内部模块 — 用于直接指定模型名绕过 task 路由
-from src.config.model_configs import TaskConfig
-from src.llm_models.utils_model import LLMOrchestrator
-
 # ============================================================
 # 可用反应表情字典（ID → 名称）
 # ============================================================
@@ -45,7 +41,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用插件")
-    config_version: str = Field(default="2.1.0", description="配置版本")
+    config_version: str = Field(default="2.1.1", description="配置版本")
 
 
 class NapcatConfig(PluginConfigBase):
@@ -57,7 +53,7 @@ class NapcatConfig(PluginConfigBase):
     host: str = Field(default="napcat", description="Napcat 服务地址")
     port: int = Field(default=9999, description="Napcat 服务端口")
     token: str = Field(default="", description="Napcat 服务认证 Token")
-    llm_task: str = Field(default="planner", description="选表情用的模型，支持 MaiBot task 名或直接模型标识（如 planner / doubao-seed-1-6-25061）")
+    llm_task: str = Field(default="planner", description="选表情用的模型任务或 SDK 支持的模型标识（如 planner / doubao-seed-1-6-25061）")
 
 
 class ProactiveReactConfig(PluginConfigBase):
@@ -519,46 +515,14 @@ class MessageReactPlugin(MaiBotPlugin):
             return "", f"解析 LLM 响应失败: {e}"
 
     async def _call_llm(self, prompt: str) -> dict[str, Any]:
-        """调用 LLM，支持 MaiBot task 名或直接模型标识名。"""
+        """通过 SDK 公开 API 调用 LLM。"""
         configured = str(self.config.napcat.llm_task or "").strip()
 
         if not configured:
             # 未配置 → 走系统默认链路
             return await self.ctx.llm.generate(prompt)
 
-        # 判断是否为已知 task 名，避免无意义的 IPC 报错
-        known_tasks = self._get_known_task_names()
-        if configured in known_tasks:
-            return await self.ctx.llm.generate(prompt, model=configured)
-
-        # 不是 task 名 → 直接走 LLMOrchestrator 直连模型
-        self.ctx.logger.info(
-            "'%s' 作为模型标识直连（已知 task: %s）",
-            configured, known_tasks or "无",
-        )
-        return await self._generate_with_pinned_model(prompt, configured)
-
-    @staticmethod
-    def _get_known_task_names() -> list[str]:
-        """从宿主 model_config.toml 读取已知 task 名列表（带缓存）。"""
-        # 简单实现：硬编码常见 task 名 + 尝试读取宿主配置
-        common = ["planner", "replyer", "tool_use", "utils", "summary", "vision", "emotion"]
-        try:
-            import tomllib
-            import os
-            path = os.path.join(
-                os.path.dirname(__file__), "..", "..", "config", "model_config.toml"
-            )
-            if os.path.isfile(path):
-                with open(path, "rb") as f:
-                    data = tomllib.load(f)
-                tasks = data.get("model_task_config", {}) or data.get("model_task", {})
-                if isinstance(tasks, dict):
-                    found = [t for t in tasks.keys() if isinstance(t, str) and t.strip()]
-                    return sorted(set(common + found))
-        except Exception:
-            pass
-        return common
+        return await self.ctx.llm.generate(prompt, model=configured)
 
     @staticmethod
     def _extract_llm_text(llm_result: Any) -> str:
@@ -659,35 +623,6 @@ class MessageReactPlugin(MaiBotPlugin):
             self._deep_get(message, "raw_message", "self_id"),
         )
         return bool(user_id and bot_id and user_id == bot_id)
-
-    async def _generate_with_pinned_model(
-        self, prompt: str, model_name: str
-    ) -> dict[str, Any]:
-        """使用 LLMOrchestrator 绕过 task 路由，直接指定模型。"""
-        orchestrator = LLMOrchestrator(
-            task_name="planner",
-            request_type="plugin.msg_react.select_emoji",
-        )
-        # 替换 orchestrator 的 task config，固定为指定模型
-        orchestrator.model_for_task = TaskConfig(
-            model_list=[model_name],
-            max_tokens=200,
-            temperature=0.7,
-            slow_threshold=30.0,
-            selection_strategy="random",
-        )
-        orchestrator.model_usage = {model_name: (0, 0, 0)}
-
-        result = await orchestrator.generate_response_async(
-            prompt=prompt,
-            temperature=0.7,
-            max_tokens=200,
-        )
-        return {
-            "success": True,
-            "content": result.response,
-            "model": result.model_name,
-        }
 
     async def _call_napcat_set_emoji(
         self, message_id: str, emoji_id: str

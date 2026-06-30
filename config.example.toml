@@ -8,7 +8,7 @@
 enabled = true
 
 # 配置版本（请勿手动修改）
-config_version = "2.1.0"
+config_version = "2.1.1"
 
 
 # Napcat 服务连接配置
@@ -29,7 +29,7 @@ token = ""
 # 选表情用的模型
 # 支持两种写法：
 #   1. MaiBot task 名：planner、tool_use 等
-#   2. 直接模型标识：doubao-seed-1-6-25061 等
+#   2. SDK 支持的模型标识：doubao-seed-1-6-25061 等
 # 默认使用 planner 任务
 llm_task = "planner"
 
